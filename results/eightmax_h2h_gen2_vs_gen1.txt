@@ -1,0 +1,21 @@
+set 1/15: game points 53 vs 44
+set 2/15: game points 48 vs 50
+set 3/15: game points 49 vs 48
+set 4/15: game points 50 vs 49
+set 5/15: game points 52 vs 55
+set 6/15: game points 47 vs 50
+set 7/15: game points 55 vs 49
+set 8/15: game points 49 vs 53
+set 9/15: game points 44 vs 54
+set 10/15: game points 54 vs 48
+set 11/15: game points 46 vs 49
+set 12/15: game points 52 vs 47
+set 13/15: game points 43 vs 47
+set 14/15: game points 51 vs 44
+set 15/15: game points 44 vs 52
+
+15 sets, 8-seat with baselines/gen1_bot_a, baselines/gen1_bot_c, baselines/gen1_bot_d, baselines/gen1_bot_e, house:call, house:random
+sets won: bots/gen2/bot_b 7, bots/gen1/bot_b 8, tied 0
+game points per set, bots/gen2/bot_b minus bots/gen1/bot_b: -0.13 (standard error 1.47)
+chips: bots/gen2/bot_b +185092, bots/gen1/bot_b +169476
+difference is within about two standard errors: not a clear winner, run more sets

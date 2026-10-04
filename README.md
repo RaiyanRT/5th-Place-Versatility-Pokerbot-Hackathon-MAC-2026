@@ -35,7 +35,7 @@ python h2h.py bots/gen2/bot_b/main.py bots/gen2/bot_c/main.py baselines/gen1_bot
 
 Per-generation scores are in `results/gen*.csv`.
 
-**Final bot: `bots/gen2/bot_b` (Opus 5.5, also `hall_of_fame/gen2_bot_b`).**
+**Final bot: `bots/gen1/bot_b` (Opus 5.5, gen1 champion).** The gen2 champion tested level with it locally but dropped to around 30th of 40 on the live practice ladder, where gen1 had held 2nd.
 
 ## Findings
 I ran out of time and stopped the loop at generation 2. Two things made stopping there the right call:
