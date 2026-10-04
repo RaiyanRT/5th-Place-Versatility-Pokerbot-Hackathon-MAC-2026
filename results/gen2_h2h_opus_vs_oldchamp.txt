@@ -1,0 +1,56 @@
+set 1/50: game points 21 vs 17
+set 2/50: game points 15 vs 19
+set 3/50: game points 20 vs 17
+set 4/50: game points 18 vs 19
+set 5/50: game points 22 vs 19
+set 6/50: game points 21 vs 15
+set 7/50: game points 20 vs 19
+set 8/50: game points 15 vs 21
+set 9/50: game points 20 vs 18
+set 10/50: game points 21 vs 16
+set 11/50: game points 17 vs 19
+set 12/50: game points 14 vs 18
+set 13/50: game points 21 vs 14
+set 14/50: game points 19 vs 18
+set 15/50: game points 17 vs 17
+set 16/50: game points 15 vs 22
+set 17/50: game points 17 vs 18
+set 18/50: game points 15 vs 16
+set 19/50: game points 20 vs 18
+set 20/50: game points 16 vs 21
+set 21/50: game points 19 vs 20
+set 22/50: game points 19 vs 18
+set 23/50: game points 21 vs 16
+set 24/50: game points 16 vs 17
+set 25/50: game points 22 vs 18
+set 26/50: game points 19 vs 20
+set 27/50: game points 18 vs 18
+set 28/50: game points 21 vs 17
+set 29/50: game points 19 vs 13
+set 30/50: game points 20 vs 15
+set 31/50: game points 19 vs 16
+set 32/50: game points 18 vs 14
+set 33/50: game points 16 vs 18
+set 34/50: game points 17 vs 14
+set 35/50: game points 16 vs 20
+set 36/50: game points 18 vs 22
+set 37/50: game points 18 vs 20
+set 38/50: game points 15 vs 17
+set 39/50: game points 19 vs 18
+set 40/50: game points 18 vs 16
+set 41/50: game points 15 vs 22
+set 42/50: game points 12 vs 19
+set 43/50: game points 18 vs 19
+set 44/50: game points 23 vs 19
+set 45/50: game points 21 vs 18
+set 46/50: game points 19 vs 20
+set 47/50: game points 19 vs 18
+set 48/50: game points 19 vs 17
+set 49/50: game points 16 vs 20
+set 50/50: game points 17 vs 17
+
+50 sets, 5-seat with baselines/gen1_bot_a, baselines/gen1_bot_d, house:call
+sets won: bots/gen2/bot_b 25, bots/gen2/bot_e 22, tied 3
+game points per set, bots/gen2/bot_b minus bots/gen2/bot_e: +0.28 (standard error 0.52)
+chips: bots/gen2/bot_b +370826, bots/gen2/bot_e +360657
+difference is within about two standard errors: not a clear winner, run more sets

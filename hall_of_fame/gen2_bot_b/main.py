@@ -1,29 +1,20 @@
-"""
-Cartographer v2: a range-mapping, expected-value poker bot (gen-2 evolution
-of the defending champion, same architecture, sharper opponent reads).
-Qwen
+"""Cartographer: a range-mapping, expected-value poker bot.
 
 Unopened pots preflop use a position chart that widens or tightens with how
 often the players still to act have folded to raises this game; every other
 decision weights each live opponent's range from their actions this hand and
 their tendencies this game (tracked by player id, corrected at showdowns),
-Monte Carlo samples their hands and the run-out, and scores every legal
-option (fold, check, call, several bet sizes, all-in) in expected chips with
-each opponent folding the weakest part of their range at the rate they have
-shown for that bet size -- so it value-bets calling stations, bluffs
-over-folders and gives up against tight players' bets.  In the last half of a
-game the same samples are also scored in expected finishing place, and the
-chip-EV choice is overridden only when that clearly improves game points.
-Gen-2 addition, the VPIP floor: a player who voluntarily pays with nearly
-everything cannot have a premium-only jamming range, so jam-sized raises
-(>=10bb) by high-VPIP opponents are modelled at their payment frequency
-instead of the tight unknown-raiser prior -- which turns all-in and random
-bots' shoves into the near-random ranges they really are from about hand six
-rather than hand twenty-five, the single largest measured win against the
-house gauntlet (+4-6k chips per 12-game duplicate set, neutral vs strong
-bots).  Robustness: every engine field is read defensively, the low-clock
-fallback now calls any ~14:1 price, and all logic sits inside try/except with
-a check/fold fallback and a per-decision wall-clock budget.
+then Monte Carlo samples their hands and the run-out. Tendencies are read
+fast: preflop fold and raise rates are pooled across spots, a player who
+plays most hands is not credited with a tight raising range, and a postflop
+bet bigger than that player's usual size is read as coming from a stronger
+range. Each legal option (fold, check, call, several bet or raise sizes,
+all-in) is scored in expected chips, with every opponent folding the weakest
+part of their range at the rate they have shown for that bet size, and in the
+last half of a game the same samples are also scored in expected finishing
+place, overriding chip EV only for a clear gain in game points. All logic
+sits inside try/except with a check/fold fallback, a per-decision time budget
+and a cheap rule-based mode for when the clock runs low.
 """
 
 import math
@@ -263,7 +254,18 @@ PF_PRIOR = {
 # Postflop fold prior shift per bet-size bucket (<0.45, <0.85, <1.6, >=1.6 pot).
 POST_FOLD_SHIFT = (-0.10, -0.03, 0.06, 0.12)
 POST_FOLD_BASE = 0.42  # prior share of hands folded to a postflop bet
+POST_RAISE_BASE = 0.10  # prior share of hands raising a postflop bet
 BLUFF_PRIOR = 0.15  # prior share of postflop bets made with weak hands
+# Pseudo-count for a player's preflop fold/raise tendency, which scales the
+# prior of every preflop spot so a player who never (or always) folds to
+# raises is read after a few hands instead of spot by spot. Large = off.
+POOL_K = 3.0
+# A player who voluntarily plays at least this share of hands is not raising
+# from a tight range; their raising range is widened to their playing range.
+VPIP_FLOOR = 0.55
+# Exponent of the bet-size tell: a postflop bet bigger than that player's own
+# average size is read as coming from a tighter range (smaller: wider). 0 = off.
+SIZE_TELL = 0.5
 
 
 def size_bucket(r):
@@ -286,6 +288,8 @@ class OppStats:
         self.pf = {key: [[0, 0, 0], [0, 0, 0]] for key in PF_PRIOR}
         self.bet_opp = 0
         self.bet_n = 0
+        self.sz_sum = 0.0  # postflop bet/raise sizes (fraction of pot)
+        self.sz_n = 0
         self.face = [[0, 0, 0] for _ in range(4)]
         self.pre_chk = 0
         self.pre_bad = 0
@@ -302,13 +306,38 @@ class OppStats:
         key = (1 if L <= 1 else (2 if L == 2 else 3), bool(invested))
         return self.pf[key][big], PF_PRIOR[key][big]
 
+    def pre_tendency(self):
+        """(fold, raise) rates relative to the priors, pooled over every
+        preflop spot this player faced a raise in."""
+        of = ef = orr = er = 0.0
+        for key, cells in self.pf.items():
+            for big in (0, 1):
+                a = cells[big]
+                if a[0]:
+                    pf, pr = PF_PRIOR[key][big]
+                    of += a[1]
+                    ef += a[0] * pf
+                    orr += a[2]
+                    er += a[0] * pr
+        return (of + POOL_K) / (ef + POOL_K), (orr + POOL_K) / (er + POOL_K)
+
     def pre_fold(self, L, big, invested):
         a, pr = self._pf(L, big, invested)
-        return _est(a[1], a[0], pr[0], 6)
+        prior = min(0.99, pr[0] * self.pre_tendency()[0])
+        return _est(a[1], a[0], prior, 6)
 
     def pre_raise(self, L, big, invested):
         a, pr = self._pf(L, big, invested)
-        return _est(a[2], a[0], pr[1], 6)
+        prior = min(0.95, pr[1] * self.pre_tendency()[1])
+        return _est(a[2], a[0], prior, 6)
+
+    def size_factor(self, sz):
+        """Multiplier on this player's betting frequency for a bet of size
+        `sz` (fraction of the pot), from their own average bet size."""
+        if sz <= 0 or SIZE_TELL <= 0:
+            return 1.0
+        avg = (self.sz_sum + 0.6 * 3) / (self.sz_n + 3)
+        return min(1.5, max(0.5, (avg / min(sz, 3.0)) ** SIZE_TELL))
 
     def bet_r(self):
         return _est(self.bet_n, self.bet_opp, 0.38, 8)
@@ -323,7 +352,7 @@ class OppStats:
     def post_raise(self, b):
         tot = self.face[0][0] + self.face[1][0] + self.face[2][0] + self.face[3][0]
         rs = self.face[0][2] + self.face[1][2] + self.face[2][2] + self.face[3][2]
-        prior = _est(rs, tot, 0.10, 6)
+        prior = _est(rs, tot, POST_RAISE_BASE, 6)
         a = self.face[b]
         return _est(a[2], a[0], prior, 5)
 
@@ -340,7 +369,7 @@ class OppStats:
 def replay(history, n, button, sb, bb):
     """Return (records, final) where each record is
     (street, seat, kind, amount, raises_before, to_call, last_raise_size,
-    last_raise_to, voluntarily_in_preflop_before)."""
+    last_raise_to, voluntarily_in_preflop_before, own_raise_size)."""
     if n == 2:
         sbs, bbs = button % n, (button + 1) % n
     else:
@@ -368,7 +397,8 @@ def replay(history, n, button, sb, bb):
         tc = cur - bets[seat]
         if tc < 0:
             tc = 0
-        recs.append((st, seat, kind, amt, L, tc, last_size, last_to, vol[seat]))
+        sz = (amt - cur) / max(1.0, float(pot + tc)) if kind == "raise" else 0.0
+        recs.append((st, seat, kind, amt, L, tc, last_size, last_to, vol[seat], sz))
         if kind == "call":
             bets[seat] += amt
             pot += amt
@@ -530,11 +560,6 @@ BET_FRACS = (0.33, 0.6, 0.9, 1.4)  # bet sizes as a fraction of the pot
 RAISE_FRACS = (0.6, 1.0)  # raise sizes as a fraction of the pot after calling
 SIZE_PENALTY = 0.07  # chips of EV charged per chip bet, against model error
 
-# ---- gen-2 additions (validated by paired-seed 12-game A/B sets) ----
-VP_FLOOR_FR = 0.15     # min modelled jam freq before the vpip floor applies
-VP_FLOOR_V = 0.58      # min vpip for the floor (jam-sized raises only)
-VP_FLOOR_AMTBB = 10    # raise size (in bb) that qualifies as jam-like
-
 
 class Cartographer(Bot):
     def __init__(self):
@@ -631,7 +656,7 @@ class Cartographer(Bot):
     def _update_stats(self, recs, players, n):
         vp = [False] * n
         open_seen = [False] * n
-        for st, seat, kind, amt, L, tc, ls, lt, inv in recs:
+        for st, seat, kind, amt, L, tc, ls, lt, inv, sz in recs:
             if seat >= n:
                 continue
             pid = players[seat]
@@ -665,6 +690,9 @@ class Cartographer(Bot):
                 o.bet_opp += 1
                 if kind == "raise":
                     o.bet_n += 1
+            if st != "preflop" and kind == "raise":
+                o.sz_sum += min(sz, 3.0)
+                o.sz_n += 1
         for s in range(n):
             pid = players[s]
             if pid == self.pid:
@@ -684,7 +712,7 @@ class Cartographer(Bot):
             o = self._opp(players[s])
             hole = [parse_card(c) for c in cards]
             q = hole_q(hole)
-            for st, seat, kind, amt, L, tc, ls, lt, inv in recs:
+            for st, seat, kind, amt, L, tc, ls, lt, inv, _sz in recs:
                 if st != "preflop" or seat != s:
                     continue
                 if kind == "raise":
@@ -700,7 +728,7 @@ class Cartographer(Bot):
                         o.pre_bad += 1
                     break
             seen = set()
-            for st, seat, kind, amt, L, tc, ls, lt, inv in recs:
+            for st, seat, kind, amt, L, tc, ls, lt, inv, _sz in recs:
                 if st == "preflop" or seat != s or kind != "raise" or st in seen:
                     continue
                 seen.add(st)
@@ -715,8 +743,7 @@ class Cartographer(Bot):
     def act(self, state):
         t0 = time.perf_counter()
         try:
-            cm = getattr(state, "clock_ms", None)
-            self.last_clock = 30000 if cm is None else int(cm)
+            self.last_clock = state.clock_ms
             if self.pid is None:
                 self.pid = state.player
             action = self._decide(state, t0)
@@ -744,8 +771,7 @@ class Cartographer(Bot):
         n = state.num_players
         hole = [parse_card(c) for c in state.hole]
         board = [parse_card(c) for c in state.board]
-        cm = getattr(state, "clock_ms", None)
-        clock = 30000 if cm is None else int(cm)
+        clock = state.clock_ms
         hands_left = max(1, self.num_hands - state.hand)
         per_hand = (clock - 2000.0) / hands_left + 100.0
         if clock < 2500 or per_hand < 20:
@@ -761,16 +787,15 @@ class Cartographer(Bot):
         vol = fin[4]
         pre_acts = [[] for _ in range(n)]
         post_acts = [[] for _ in range(n)]
-        for st, seat, kind, amt, rl, tc, ls, lt, inv in recs:
+        for st, seat, kind, amt, rl, tc, ls, lt, inv, sz in recs:
             if seat >= n:
                 continue
             if st == "preflop":
-                pre_acts[seat].append((kind, rl, self._big(rl, lt), inv, amt))
+                pre_acts[seat].append((kind, rl, self._big(rl, lt), inv))
             else:
-                post_acts[seat].append((st, kind, tc > 0, size_bucket(ls) if tc > 0 else 0))
+                post_acts[seat].append((st, kind, tc > 0, size_bucket(ls) if tc > 0 else 0, sz))
         me = state.seat
-        folded = state.folded or [False] * n
-        opp_seats = [s for s in range(n) if s != me and not folded[s]]
+        opp_seats = [s for s in range(n) if s != me and not state.folded[s]]
         if not opp_seats:
             return state.check() if state.to_call == 0 else state.call()
         if street == "preflop":
@@ -825,8 +850,7 @@ class Cartographer(Bot):
         else:
             order = [(b + 3 + i) % n for i in range(n)]
         idx = order.index(me)
-        folded = state.folded or [False] * n
-        behind = [s for s in order[idx + 1:] if not folded[s]]
+        behind = [s for s in order[idx + 1:] if not state.folded[s]]
         limpers = sum(1 for r in recs if r[0] == "preflop" and r[2] == "call")
         bb_seat = (b + 1) % n if n == 2 else (b + 2) % n
         sb_seat = b % n if n == 2 else (b + 1) % n
@@ -868,20 +892,13 @@ class Cartographer(Bot):
         rtop = 1.0
         cap = 0.0
         capw = 0.0
-        for kind, L, big, inv, amt in acts:
+        vp = o.vpip_r()
+        for kind, L, big, inv in acts:
             if kind == "raise":
                 fr = o.open_r() if L == 0 else o.pre_raise(L, big, inv)
-                if amt >= VP_FLOOR_AMTBB * self.bb and fr >= VP_FLOOR_FR:
-                    # VPIP floor: a player who voluntarily pays with nearly
-                    # everything AND jams often cannot have a premium-only
-                    # jamming range (all-in/random bots jam any two cards).
-                    # The triple gate (jam size + own jam freq + high vpip)
-                    # never fires on loose callers who 3-bet only premiums,
-                    # so tight bots keep their accurate modelled ranges.
-                    v = o.vpip_r()
-                    if v >= VP_FLOOR_V:
-                        fr = min(1.0, max(fr, v * 0.95))
                 rtop = max(0.025, rtop * fr)
+                if vp >= VPIP_FLOOR:
+                    rtop = max(rtop, 0.95 * vp)
                 capw = 0.0
             elif kind == "call":
                 if L == 0:
@@ -922,7 +939,7 @@ class Cartographer(Bot):
         PPS = T.PPS
         M = len(W)
         eps = o.eps_post()
-        for st, kind, facing, b in acts:
+        for st, kind, facing, b, sz in acts:
             if kind not in ("raise", "call", "check"):
                 continue
             acc = list(accumulate([W[j] for j in ORD]))
@@ -941,6 +958,7 @@ class Cartographer(Bot):
             if kind == "raise" or kind == "call":
                 if kind == "raise":
                     a = o.post_raise(b) if facing else o.bet_r()
+                    a = min(1.0, a * o.size_factor(sz))
                     t = qt(1.0 - a)
                     inr = [_sig((PP[k] - t) / 0.07) for k in range(M)]
                     beta = eps  # share of bets that are bluffs from the bottom
@@ -1176,8 +1194,7 @@ class Cartographer(Bot):
         for s in range(n):
             if s != me and sbets[s] > cap:
                 Peff -= sbets[s] - cap
-        folded = state.folded or [False] * n
-        live = [s for s in range(n) if not folded[s]]
+        live = [s for s in range(n) if not state.folded[s]]
         ip = max(live, key=lambda s: (s - 1) % n) == me
         opp_max = max(stacks[o.seat] + sbets[o.seat] for o in opps)
         nopp = len(opps)
@@ -1289,7 +1306,6 @@ class Cartographer(Bot):
             return None
         n = state.num_players
         me = state.seat
-        folded_l = state.folded or [False] * n
         var = (self.sq_sum + 1600.0 * 50) / (self.sq_n + 50)
         hd = float(self.hands_done)
         my_total = self.totals.get(self.pid, 0)
@@ -1304,7 +1320,7 @@ class Cartographer(Bot):
             pid = state.player_at(s)
             t = self.totals.get(pid, 0)
             t += (t / (hd + 40.0) - mu_me) * h
-            if folded_l[s]:
+            if state.folded[s]:
                 lost = self.stack - state.stacks[s]
                 dead += lost
                 others.append((t - lost, False))
@@ -1351,8 +1367,6 @@ class Cartographer(Bot):
         hr = [c >> 2 for c in hole]
         br = [c >> 2 for c in board]
         pair_used = hr[0] == hr[1] or hr[0] in br or hr[1] in br
-        if to_call > 0 and to_call <= 0.07 * pot:
-            return state.call()   # getting ~14:1 or better: any hand calls
         if cat >= 2 and (pair_used or cat >= 4):
             if state.can_raise and to_call < pot:
                 return self._raise(state, max(state.street_bets) + 0.7 * (pot + to_call))
