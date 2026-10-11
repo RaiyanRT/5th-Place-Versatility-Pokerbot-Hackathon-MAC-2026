@@ -1,7 +1,7 @@
-# Pokerbot-Hackathon-MAC-2026
+# Pokerbot-Hackathon-MAC-2026: 5th Place
 
 ## Introduction
-A no-limit hold'em bot for the MAC poker bot hackathon, evolved over several generations of AI-written variants.
+Versatility is a no-limit hold'em bot that finished 5th at the MAC poker bot hackathon. It adapts to each opponent mid-game by tracking how they play and simulating hands against their likely holdings, and it was evolved over generations of AI-written variants.
 
 ## Methodology
 This bot was developed using an evolutionary training loop with AI-generated variants.
